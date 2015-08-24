@@ -23,13 +23,13 @@ import akka.http.scaladsl.model.MediaTypes._
 import akka.http.scaladsl.unmarshalling.{ Unmarshal, Unmarshaller }
 import com.github.dnvriend.TestSpec
 
-import scala.xml.NodeSeq
+import scala.xml.{Elem, NodeSeq}
 
 class XmlMarshalUnmarshalTest extends TestSpec {
 
   case class Person(name: String, age: Int)
 
-  val personXml =
+  val personXml: Elem =
     <person>
       <name>John Doe</name>
       <age>25</age>

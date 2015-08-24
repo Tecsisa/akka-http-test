@@ -16,12 +16,20 @@
 
 package com.github.dnvriend
 
+import java.io.{ FileOutputStream, PipedOutputStream, PipedInputStream }
+
 import akka.http.scaladsl._
 import akka.http.scaladsl.model._
 import akka.http.scaladsl.server.Directives._
 import akka.http.scaladsl.server.Route
+import akka.stream.io.{ InputStreamSource, OutputStreamSink }
+import akka.stream.scaladsl.{ Sink, Source }
+import akka.stream.io.Implicits._
+import akka.util.ByteString
 import com.github.dnvriend.domain.Person
 import com.github.dnvriend.util.TimeUtil
+
+import scala.concurrent.Future
 
 trait Service extends Marshallers with GenericServices {
 
@@ -38,6 +46,59 @@ trait Service extends Marshallers with GenericServices {
         pathPrefix("ping") {
           complete {
             Ping(TimeUtil.timestamp)
+          }
+        } ~
+        // https://gist.github.com/jrudolph/08d0d28e1eddcd64dbd0
+        // curl -v -X POST --header "Transfer-Encoding: chunked" -F "file=@/Users/jvazquez/Desktop/2001.A.Space_Odyssey.mkv" localhost:8080/upload
+        pathPrefix("upload") {
+          entity(as[Multipart.FormData]) { (formData: Multipart.FormData) ⇒
+            val fileNamesFuture = formData.parts.mapAsync(1) { p ⇒
+              println(s"Got part. name: ${p.name} filename: ${p.filename}")
+              println("Counting size...")
+              @volatile var lastReport = System.currentTimeMillis()
+              @volatile var lastSize = 0L
+              def receiveChunk(counter: (Long, Long), chunk: ByteString): (Long, Long) = {
+                val (olSize, oldChunks) = counter
+                val newSize = olSize + chunk.size
+                val newChunks = oldChunks + 1
+
+                val now = System.currentTimeMillis()
+                if (now > lastReport + 1000) {
+                  val lastedTotal = now - lastReport
+                  val bytesSinceLast = newSize - lastSize
+                  val speedMBPS = bytesSinceLast.toDouble / 1000000 / lastedTotal * 1000
+
+                  println(f"Already got $newChunks%7d chunks with total size $newSize%11d bytes avg chunksize ${newSize / newChunks}%7d bytes/chunk speed: $speedMBPS%6.2f MB/s")
+
+                  lastReport = now
+                  lastSize = newSize
+                }
+                (newSize, newChunks)
+              }
+              p.entity.dataBytes.runFold((0L, 0L))(receiveChunk).map {
+                case (size, numChunks) ⇒
+                  println(s"Size is $size")
+                  (p.name, p.filename, size)
+              }
+            }.runFold(Seq.empty[(String, Option[String], Long)])(_ :+ _).map(_.mkString(", "))
+            complete {
+              fileNamesFuture
+            }
+          }
+        } ~
+        pathPrefix("connect") {
+          entity(as[Multipart.FormData]) { (formData: Multipart.FormData) ⇒
+            val fileNamesFuture = formData.parts.mapAsync(1) { p ⇒
+              val pipedIn = new PipedInputStream()
+              val pipedOut = new PipedOutputStream(pipedIn)
+              val fos = new FileOutputStream("/Users/jvazquez/Desktop/2001_backup.mkv")
+              p.entity.dataBytes.to(OutputStreamSink(() ⇒ pipedOut)).run()
+              (InputStreamSource(() ⇒ pipedIn) to Sink.outputStream(() ⇒ fos)).run()
+              Future(p.name)
+            }.runFold(Seq.empty[String])(_ :+ _).map(_.mkString(", "))
+            complete {
+              fileNamesFuture
+            }
           }
         }
     }
